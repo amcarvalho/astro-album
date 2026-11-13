@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Night Sky Album</title>
+<style>
+  :root { --bg: #05070d; --card: #0b0f1a; --line: rgba(160,180,220,.14); --text: #e6ebf5; --muted: #8c97ad;
+    --gold: #ffcf6e; --accent: #7cc4ff; --err: #ff8a8a; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  header { padding: 40px 24px 20px; max-width: 1400px; margin: 0 auto; display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
+  header .titles { flex: 1; min-width: 220px; }
+  h1 { margin: 0; font-size: 28px; font-weight: 600; letter-spacing: .3px; }
+  header p { margin: 6px 0 0; color: var(--muted); }
+  .btn { background: rgba(255,255,255,.06); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 14px; font: inherit; cursor: pointer; }
+  .btn:hover { background: rgba(255,255,255,.12); }
+  .btn.primary { background: var(--gold); color: #1a1405; border-color: transparent; font-weight: 600; }
+  .btn.primary:hover { filter: brightness(1.08); }
+  .btn:disabled { opacity: .5; cursor: default; }
+  #addBtn { display: none; }
+  body.server #addBtn { display: inline-block; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); gap: 18px;
+    padding: 12px 24px 48px; max-width: 1400px; margin: 0 auto; }
+  a.card { display: block; background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+    color: inherit; text-decoration: none; transition: transform .15s, border-color .15s, box-shadow .15s; }
+  a.card:hover { transform: translateY(-2px); border-color: rgba(255,207,110,.45); box-shadow: 0 10px 30px rgba(0,0,0,.5); }
+  .thumb { aspect-ratio: 16 / 9; background: #000 center / cover no-repeat; }
+  .info { padding: 12px 14px 14px; }
+  .info h2 { margin: 0; font-size: 16px; font-weight: 600; }
+  .info .type { color: var(--gold); font-size: 12.5px; }
+  .info .meta { color: var(--muted); font-size: 12.5px; margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px 12px; }
+  .empty { color: var(--muted); padding: 24px; }
+
+  dialog { background: #0b0f1a; color: var(--text); border: 1px solid var(--line); border-radius: 14px; padding: 0;
+    width: min(520px, calc(100vw - 32px)); box-shadow: 0 20px 60px rgba(0,0,0,.6); }
+  dialog::backdrop { background: rgba(0,0,0,.6); backdrop-filter: blur(3px); }
+  dialog form { padding: 22px; display: grid; gap: 14px; }
+  dialog h2 { margin: 0; font-size: 18px; }
+  .field { display: grid; gap: 5px; }
+  .field label { font-size: 13px; color: var(--muted); }
+  .field .hint { font-size: 12px; color: var(--muted); }
+  .field input[type=text] { background: #05070d; color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+    padding: 9px 11px; font: inherit; }
+  .field input[type=text]:focus { outline: 2px solid rgba(124,196,255,.4); border-color: transparent; }
+  .drop { border: 1.5px dashed var(--line); border-radius: 10px; padding: 16px; text-align: center; color: var(--muted);
+    cursor: pointer; transition: border-color .15s, background .15s; }
+  .drop.over, .drop:hover { border-color: var(--accent); background: rgba(124,196,255,.05); }
+  .drop.has { color: var(--text); border-style: solid; }
+  .drop input { display: none; }
+  .actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
+  .progress { height: 6px; background: rgba(255,255,255,.08); border-radius: 3px; overflow: hidden; display: none; }
+  .progress div { height: 100%; width: 0; background: var(--gold); transition: width .2s; }
+  #log { display: none; background: #05070d; border: 1px solid var(--line); border-radius: 8px; padding: 10px;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: #b8c2d6; max-height: 200px; overflow: auto; white-space: pre-wrap; }
+  #status { font-size: 13px; }
+  #status.err { color: var(--err); }
+  @media (max-width: 600px) { header { padding: 24px 16px 12px; } .grid { padding: 8px 16px 32px; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="titles">
+    <h1>Night Sky Album</h1>
+    <p id="count"></p>
+  </div>
+  <button class="btn primary" id="addBtn">+ Add photo</button>
+</header>
+<div class="grid" id="grid"></div>
+
+<dialog id="dlg">
+  <form id="form" method="dialog">
+    <h2>Add a photo</h2>
+    <div class="field">
+      <label for="name">Object name</label>
+      <input type="text" id="name" name="name" placeholder="e.g. Andromeda Galaxy" autocomplete="off">
+      <span class="hint">Used as the title and to pick the main object. Leave blank to use the name stored in the FITS file.</span>
+    </div>
+    <div class="field">
+      <label>FITS file <span style="color:var(--err)">*</span></label>
+      <div class="drop" id="dropFits">Drop the .fit file here or click to choose<input type="file" id="fits" accept=".fit,.fits,.fts"></div>
+    </div>
+    <div class="field">
+      <label>Display image (recommended)</label>
+      <div class="drop" id="dropImg">Drop the PNG/JPG that came with it, or click to choose<input type="file" id="image" accept=".png,.jpg,.jpeg,.tif,.tiff"></div>
+      <span class="hint">Needed when the FITS is a starless layer (as with DWARF/Siril “VIS_Starless” exports). Without it, the image is rendered from the FITS.</span>
+    </div>
+    <div class="progress" id="prog"><div></div></div>
+    <div id="status"></div>
+    <div id="log"></div>
+    <div class="actions">
+      <button type="button" class="btn" id="cancel">Close</button>
+      <button type="submit" class="btn primary" id="submit">Upload &amp; tag</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+const P = /*__DATA__*/null;
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const dur = (s) => { if (!s) return ""; const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60); return h ? `${h}h ${m}m` : `${m}m`; };
+$("count").textContent = `${P.length} photo${P.length === 1 ? "" : "s"} · hover over the stars in any photo to identify them`;
+$("grid").innerHTML = P.length ? P.map((p) => {
+  const d = p.meta.date ? new Date(p.meta.date + (p.meta.date.endsWith("Z") ? "" : "Z")).toLocaleDateString(undefined, { dateStyle: "medium" }) : "";
+  return `<a class="card" href="${esc(p.slug)}/index.html">
+    <div class="thumb" style="background-image:url('${esc(p.slug)}/thumb.jpg')"></div>
+    <div class="info">
+      <h2>${esc(p.title)}</h2>
+      ${p.mainType ? `<div class="type">${esc(p.mainType)}</div>` : ""}
+      <div class="meta">${[d, p.meta.integration && dur(p.meta.integration) + " integration", p.meta.filter, `${p.count} objects marked`].filter(Boolean).map((x) => `<span>${esc(x)}</span>`).join("")}</div>
+    </div></a>`;
+}).join("") : `<div class="empty">No photos yet.${location.protocol.startsWith("http") ? " Use “+ Add photo” to upload a FITS file." : ""}</div>`;
+
+// ---------- upload (only when served by the album server)
+fetch("api/health").then((r) => r.ok && document.body.classList.add("server")).catch(() => {});
+
+function wireDrop(box, input) {
+  const label = box.firstChild.textContent;
+  const show = () => { const f = input.files[0]; box.classList.toggle("has", !!f); box.firstChild.textContent = f ? `${f.name} · ${(f.size / 1048576).toFixed(1)} MB` : label; };
+  box.addEventListener("click", () => input.click());
+  input.addEventListener("change", show);
+  box.addEventListener("dragover", (e) => { e.preventDefault(); box.classList.add("over"); });
+  box.addEventListener("dragleave", () => box.classList.remove("over"));
+  box.addEventListener("drop", (e) => { e.preventDefault(); box.classList.remove("over"); if (e.dataTransfer.files.length) { input.files = e.dataTransfer.files; show(); } });
+}
+wireDrop($("dropFits"), $("fits"));
+wireDrop($("dropImg"), $("image"));
+
+let busy = false;
+$("addBtn").addEventListener("click", () => { $("dlg").showModal(); $("name").focus(); });
+$("cancel").addEventListener("click", () => $("dlg").close());
+$("dlg").addEventListener("cancel", (e) => { if (busy) e.preventDefault(); });
+
+function status(msg, err) { $("status").textContent = msg; $("status").className = err ? "err" : ""; }
+
+$("form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const f = $("fits").files[0];
+  if (!f) return status("Choose a FITS file first.", true);
+  const fd = new FormData();
+  fd.append("name", $("name").value);
+  fd.append("fits", f);
+  if ($("image").files[0]) fd.append("image", $("image").files[0]);
+  busy = true; $("submit").disabled = $("cancel").disabled = true;
+  $("prog").style.display = "block"; $("log").style.display = "none"; $("log").textContent = "";
+  status("Uploading…");
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "api/upload");
+  xhr.upload.onprogress = (ev) => { if (ev.lengthComputable) { const p = ev.loaded / ev.total * 100; $("prog").firstElementChild.style.width = p + "%"; status(`Uploading… ${p.toFixed(0)}%`); } };
+  xhr.onerror = () => fail("Upload failed (network error).");
+  xhr.onload = () => {
+    if (xhr.status !== 200) { let m = xhr.responseText; try { m = JSON.parse(m).detail; } catch {} return fail(m || `Upload failed (${xhr.status})`); }
+    poll(JSON.parse(xhr.responseText).id);
+  };
+  xhr.send(fd);
+});
+
+function fail(msg) { busy = false; $("submit").disabled = $("cancel").disabled = false; $("prog").style.display = "none"; status(msg, true); }
+
+async function poll(id) {
+  $("prog").style.display = "none"; $("log").style.display = "block";
+  status("Identifying stars and objects… this takes a minute or two.");
+  for (;;) {
+    let j;
+    try { j = await (await fetch(`api/jobs/${id}`, { cache: "no-store" })).json(); } catch { await new Promise((r) => setTimeout(r, 2000)); continue; }
+    $("log").textContent = j.log.join("\n"); $("log").scrollTop = 1e9;
+    if (j.status === "done") { status("Done! Opening the photo…"); location.href = `${j.slug}/index.html`; return; }
+    if (j.status === "error") return fail(j.error || "Processing failed.");
+    if (j.status === "queued") status("Waiting for another photo to finish…");
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+}
+</script>
+</body>
+</html>

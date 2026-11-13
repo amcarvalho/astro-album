@@ -1,0 +1,10 @@
+services:
+  astro-album:
+    image: ghcr.io/amcarvalho/astro-album:latest
+    container_name: astro-album
+    restart: unless-stopped
+    ports:
+      - "8088:8000"
+    volumes:
+      # album pages, uploaded FITS originals and plate-solving star indexes
+      - ./data:/data

@@ -1,0 +1,8 @@
+.venv
+.git
+.github
+site
+data
+astrometry-index
+.claude
+__pycache__

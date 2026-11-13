@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+site/
+data/
+astrometry-index/
+.claude/
+.DS_Store
