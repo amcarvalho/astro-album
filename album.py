@@ -25,6 +25,8 @@ TEMPLATES = ROOT / "templates"
 UA = {"User-Agent": "astro-album-annotator/0.2 (personal astrophotography tool)"}
 SIMBAD_TAP = ["https://simbad.cds.unistra.fr/simbad/sim-tap/sync",
               "https://simbad.harvard.edu/simbad/sim-tap/sync"]
+# object pages: the Harvard mirror (the main CDS site has had long outages)
+SIMBAD_WEB = "https://simbad.harvard.edu/simbad/sim-id?Ident="
 
 GREEK = {"alf": "α", "bet": "β", "gam": "γ", "del": "δ", "eps": "ε", "zet": "ζ", "eta": "η",
          "tet": "θ", "iot": "ι", "kap": "κ", "lam": "λ", "mu.": "μ", "nu.": "ν", "ksi": "ξ",
@@ -313,7 +315,7 @@ def annotate(fit, png=None, main=None, title=None, slug=None, maglim=11.5, workd
              "type": "Galaxy" if ob["otype"] in GALAXY_TYPES else otypes.get(ob["otype"], ob["otype"]),
              "kind": "star" if is_star else "dso", "mag": round(mag, 2) if mag is not None else None,
              "wiki": wiki,
-             "simbad": "https://simbad.cds.unistra.fr/simbad/sim-id?Ident=" + requests.utils.quote(mid),
+             "simbad": SIMBAD_WEB + requests.utils.quote(mid),
              "main": o == main_oid}
         if not is_star and ob["galdim_majaxis"]:
             maj = ob["galdim_majaxis"] * 60 / scale_arcsec * sx

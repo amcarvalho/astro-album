@@ -22,7 +22,7 @@ import album  # noqa: E402
 UPLOADS = DATA / "uploads"
 UPLOADS.mkdir(parents=True, exist_ok=True)
 album.SITE.mkdir(parents=True, exist_ok=True)
-album.build_album()
+album.render_all()  # re-apply the current templates, so image updates fix existing pages
 
 app = FastAPI(title="Astro Album")
 jobs: dict[str, dict] = {}

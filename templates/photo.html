@@ -135,6 +135,7 @@
 
 <script>
 const D = /*__DATA__*/null;
+const SIMBAD = "https://simbad.harvard.edu/simbad/sim-id?Ident="; // built here so a re-render updates old pages
 const $ = (id) => document.getElementById(id);
 const tip = $("tip");
 let cur = null, hideTimer = null, pinned = false;
@@ -312,7 +313,7 @@ function showTip(i, pin = false) {
     ${mk.aliases.length ? `<div class="al">${esc(mk.aliases.join(" · "))}</div>` : ""}
     <div class="links">
       ${mk.wiki ? `<a href="${esc(mk.wiki)}" target="_blank" rel="noopener">Wikipedia →</a>` : `<span class="nowiki">No Wikipedia article</span>`}
-      <a href="${esc(mk.simbad)}" target="_blank" rel="noopener">SIMBAD</a>
+      <a href="${esc(SIMBAD + encodeURIComponent(mk.id))}" target="_blank" rel="noopener">SIMBAD</a>
     </div>`;
   tip.classList.add("show");
   positionTip();
