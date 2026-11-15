@@ -23,7 +23,7 @@ import register
 
 Image.MAX_IMAGE_PIXELS = None
 ROOT = Path(__file__).resolve().parent
-SITE = Path(os.environ.get("SITE_DIR", ROOT / "site"))
+SITE = Path(os.environ.get("SITE_DIR") or (Path(os.environ["DATA_DIR"]) / "site" if os.environ.get("DATA_DIR") else ROOT / "site"))
 TEMPLATES = ROOT / "templates"
 UA = {"User-Agent": "astro-album-annotator/0.2 (personal astrophotography tool)"}
 SIMBAD_TAP = ["https://simbad.cds.unistra.fr/simbad/sim-tap/sync",
