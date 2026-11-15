@@ -5,6 +5,7 @@ Usage:
   python album.py add <folder-or-fits> [--png FILE] [--main "M 31"] [--title "..."] [--maglim 11.5]
   python album.py album            # rebuild the album index only
   python album.py render           # re-apply templates to all photos (after editing templates/)
+  python album.py reprocess [slug] # re-tag photos from their saved uploads (after a fix)
 
 Each photo gets <site>/<slug>/index.html (interactive annotated viewer); the album
 lives at <site>/index.html. The site folder defaults to ./site (env SITE_DIR).
@@ -17,6 +18,8 @@ import requests
 from astropy.io import fits
 from astropy.wcs import WCS
 from PIL import Image
+
+import register
 
 Image.MAX_IMAGE_PIXELS = None
 ROOT = Path(__file__).resolve().parent
@@ -34,6 +37,7 @@ GREEK = {"alf": "α", "bet": "β", "gam": "γ", "del": "δ", "eps": "ε", "zet":
          "chi": "χ", "psi": "ψ", "ome": "ω"}
 GALAXY_TYPES = {"G", "GiG", "GiC", "GiP", "BiC", "AGN", "LIN", "SyG", "Sy1", "Sy2", "SBG", "bCG",
                 "LSB", "EmG", "H2G", "rG", "IG", "PaG", "G?", "QSO"}
+CLUSTER_TYPES = {"Cl*", "OpC", "GlC", "As*", "St*", "MGr", "C?*", "Gl?", "OpC?"}
 STAR_TYPES = ("*", "V*", "PM*", "SB*", "EB*", "**", "Em*", "Be*", "HB*", "RG*", "AB*", "Pu*", "LP*",
               "Mi*", "C*", "S*", "WD*", "Y*", "TT*", "Or*", "Ae*", "BS*", "SG*", "s*", "RR*", "Ce*",
               "dS*", "Sy*", "El*", "Ro*", "a2*", "bC*", "gD*", "BY*", "RS*", "Er*", "Fl*", "Ir*",
@@ -83,11 +87,16 @@ def pretty_ident(i):
     return i
 
 
+# a real Messier/NGC/IC object ("NGC 2244", "IC 1805A"), not a cluster member like "NGC 2244 152"
+DSO_ID = re.compile(r"^(M|NGC|IC) ?\d+[A-Z]?$")
+
 ID_RANK = [("NAME ", 0), ("M ", 1), ("NGC ", 2), ("IC ", 3), ("* ", 4), ("V* ", 5),
            ("HD ", 6), ("HIP ", 7), ("UGC ", 8), ("PGC ", 9), ("TYC ", 10)]
 
 
 def rank(i):
+    if i.startswith(("M ", "NGC ", "IC ")) and not DSO_ID.match(i):
+        return 98  # cluster-member designation: last resort as a name
     for p, r in ID_RANK:
         if i.startswith(p):
             return r
@@ -164,23 +173,37 @@ def render_fits(data):
     return Image.fromarray((a * 255 + 0.5).astype(np.uint8), "RGB")
 
 
-def detect_flip(img_lum, pts, log=print):
-    """True if FITS y must be flipped to match the display image (checks bright stars)."""
-    H, W = img_lum.shape
+def align_image(img, W, H, cat, rendered, log=print):
+    """Transform from FITS display coordinates to display-image pixels.
 
-    def score(flip):
-        vals = []
-        for x, y in pts:
-            yy = H - 1 - y if flip else y
-            xi, yi = int(round(x)), int(round(yy))
-            if 21 <= xi < W - 21 and 21 <= yi < H - 21:
-                vals.append(img_lum[yi - 4:yi + 5, xi - 4:xi + 5].max()
-                            - np.median(img_lum[yi - 20:yi + 21, xi - 20:xi + 21]))
-        return float(np.mean(vals)) if vals else 0.0
-
-    a, b = score(False), score(True)
-    log(f"  orientation check: as-is={a:.1f}  flipped={b:.1f}")
-    return b > a
+    cat: [(x, y, obj)] catalog objects in FITS display coordinates. For a supplied PNG
+    (which may be cropped, resized, rotated or mirrored) the transform is found by
+    matching catalog stars to stars detected in the image.
+    """
+    ident = (np.eye(2), np.zeros(2))
+    if rendered:
+        return ident
+    stars = sorted(((o["V"] if o["V"] is not None else o["G"], x, y) for x, y, o in cat
+                    if (o["V"] is not None or o["G"] is not None) and np.isfinite(x) and np.isfinite(y)
+                    and 0 <= x < W and 0 <= y < H), key=lambda r: r[0])
+    src = np.array([(x, y) for _, x, y in stars]).reshape(-1, 2)
+    dst = register.detect_stars(img)
+    res = register.find_transform(src, dst, log=log)
+    if res and res[2] >= 8 and res[3] is not None and res[3] < 2.0:
+        (M, t), mirrored, n, rms = res
+        sc = float(np.sqrt(abs(np.linalg.det(M))))
+        rot = math.degrees(math.atan2(M[1, 0], M[0, 0]))
+        log(f"  aligned image to FITS: {n} stars matched (rms {rms:.2f}px), scale {sc:.3f}, "
+            f"rotation {rot:.1f}°{', mirrored' if mirrored else ''}")
+        return M, t
+    log(f"  warning: could not match stars between the image and the FITS "
+        f"({res[2] if res else 0} matches)")
+    iw, ih = img.size
+    if abs(iw / ih - W / H) < 0.01 * W / H:  # same framing: assume a plain resize
+        log("  falling back to a plain resize (same aspect ratio)")
+        return np.diag([iw / W, ih / H]), np.array([(iw / W - 1) / 2, (ih / H - 1) / 2])
+    raise RuntimeError("Couldn't line up the display image with the FITS (it seems to be cropped and no "
+                       "stars could be matched). Try uploading without the image, or with an uncropped one.")
 
 
 def slugify(s):
@@ -208,26 +231,27 @@ def annotate(fit, png=None, main=None, title=None, slug=None, maglim=11.5, workd
             log("  rendering display image from FITS")
             img = render_fits(data)
 
+        frame_is_png = False  # True when the plate solution is for the PNG itself
         if "CTYPE1" in hdr and "CRVAL1" in hdr:
             wcs = WCS(hdr, naxis=2)
             log("  FITS already plate-solved")
         else:
-            from solver import solve  # astrometry.net fallback
+            from solver import pixel_scale, solve  # astrometry.net fallback
             log("  FITS has no plate solution, solving with astrometry.net…")
-            if png:  # solve on the display image's stars (works even when the FITS is starless)
-                lum = img.convert("L")
-                if lum.size != (W, H):
-                    lum = lum.resize((W, H), Image.LANCZOS)
-                solve_data = np.flipud(np.asarray(lum, dtype=np.float32) / 255.0)  # back to FITS row order
+            scale_range = None
+            if png and starless:  # no stars in the FITS: solve the PNG directly, in its own frame
+                solve_data = np.flipud(np.asarray(img.convert("L"), dtype=np.float32) / 255.0)
+                s0 = pixel_scale(hdr)
+                if s0:  # the PNG may be downsized, so allow coarser pixel scales
+                    scale_range = (s0 * 0.8, s0 * 1.25 * max(1.0, W / img.size[0], H / img.size[1]))
+                W, H = img.size
+                frame_is_png = True
             else:
                 solve_data = data
-            wcs_hdr = solve(hdr, solve_data, Path(workdir or fit.parent), log=log)
+            wcs_hdr = solve(hdr, solve_data, Path(workdir or fit.parent), log=log, scale_range=scale_range)
             if wcs_hdr is None:
                 raise RuntimeError("Plate solving failed: could not work out where in the sky this image is.")
             wcs = WCS(wcs_hdr, naxis=2)
-    if img.size != (W, H):
-        log(f"  note: image {img.size} differs from FITS {W}x{H}; scaling coordinates")
-    sx, sy = img.size[0] / W, img.size[1] / H
 
     # field footprint for the catalog query
     xs = [0, W / 2, W - 1, W - 1, W - 1, W / 2, 0, 0]
@@ -246,27 +270,37 @@ def annotate(fit, png=None, main=None, title=None, slug=None, maglim=11.5, workd
             "f.V,f.G,f.B")
     stars = tap(f"SELECT {cols} FROM basic b LEFT JOIN allfluxes f ON b.oid=f.oidref "
                 f"WHERE {region} AND (f.V<{maglim} OR f.G<{maglim})")
-    dsos = tap(f"SELECT DISTINCT {cols} FROM basic b JOIN ident i ON i.oidref=b.oid "
-               f"LEFT JOIN allfluxes f ON b.oid=f.oidref WHERE {region} AND "
-               "(i.id LIKE 'M %' OR i.id LIKE 'NGC %' OR i.id LIKE 'IC %')")
-    objs = {o["oid"]: o for o in stars + dsos}
-    dso_oids = {o["oid"] for o in dsos}
+    dso_rows = tap(f"SELECT {cols},i.id FROM basic b JOIN ident i ON i.oidref=b.oid "
+                   f"LEFT JOIN allfluxes f ON b.oid=f.oidref WHERE {region} AND "
+                   "(i.id LIKE 'M %' OR i.id LIKE 'NGC %' OR i.id LIKE 'IC %')")
+    dsos = list({r["oid"]: r for r in dso_rows if DSO_ID.match(norm_id(r.pop("id")))}.values())
+    # the named main object, which may have no M/NGC/IC number (e.g. "NAME Rosette Nebula")
+    main_query = (main or str(hdr.get("OBJECT", ""))).strip()
+    named = []
+    if main_query:
+        q = main_query.replace("'", "''")
+        named = tap(f"SELECT {cols} FROM ident i JOIN basic b ON b.oid=i.oidref "
+                    f"LEFT JOIN allfluxes f ON b.oid=f.oidref WHERE i.id IN ('{q}', 'NAME {q}')")
+    objs = {o["oid"]: o for o in stars + dsos + named}
+    dso_oids = {o["oid"] for o in dsos + named if not o["otype"].endswith("*") or o["otype"] in CLUSTER_TYPES}
     log(f"  {len(stars)} stars, {len(dsos)} M/NGC/IC objects nearby")
 
+    # positions in "FITS display" coordinates: FITS pixels with the rows flipped to top-down
+    def to_display(ra_, dec_):
+        x_, y_ = wcs.world_to_pixel_values(ra_, dec_)
+        return np.asarray(x_, dtype=float), H - 1 - np.asarray(y_, dtype=float)
+
     oids = list(objs)
-    px, py = wcs.world_to_pixel_values([objs[o]["ra"] for o in oids], [objs[o]["dec"] for o in oids])
-    lum = np.asarray(img.convert("L"), dtype=np.float32)
-    bright = [(x * sx, y * sy) for o, x, y in zip(oids, px, py)
-              if (objs[o]["V"] or objs[o]["G"] or 99) < 9.5]
-    # our own render is always flipped to top-down; a supplied image is checked against bright stars
-    flip = (detect_flip(lum, bright, log) if bright else True) if png else True
+    px, py = to_display([objs[o]["ra"] for o in oids], [objs[o]["dec"] for o in oids])
+    T = align_image(img, W, H, [(x, y, objs[o]) for o, x, y in zip(oids, px, py)],
+                    rendered=not png or frame_is_png, log=log)
+    tx, ty = register.apply(T, np.c_[px, py]).T
+    scale_img = float(np.sqrt(abs(np.linalg.det(T[0]))))  # display pixels per FITS pixel
+    iw, ih = img.size
     inframe = []
-    for o, x, y in zip(oids, px, py):
-        if not (np.isfinite(x) and np.isfinite(y)):
-            continue
-        yy = (H - 1 - y) if flip else y
-        if -2 <= x <= W + 1 and -2 <= yy <= H + 1:
-            objs[o]["x"], objs[o]["y"] = float(x), float(yy)
+    for o, x, y in zip(oids, tx, ty):
+        if np.isfinite(x) and np.isfinite(y) and -2 <= x <= iw + 1 and -2 <= y <= ih + 1:
+            objs[o]["x"], objs[o]["y"] = float(x), float(y)
             inframe.append(o)
 
     idents = {}
@@ -280,9 +314,8 @@ def annotate(fit, png=None, main=None, title=None, slug=None, maglim=11.5, workd
     log(f"  {len(inframe)} objects in frame, {len(links)} with Wikipedia articles")
 
     # main object: given name, else FITS OBJECT keyword
-    main_query = (main or str(hdr.get("OBJECT", ""))).strip()
-    main_oid = None
-    if main_query:
+    main_oid = next((o["oid"] for o in named if o["oid"] in inframe), None)
+    if main_query and main_oid is None:
         mk_ = key_id(main_query)
         for o in inframe:
             if any(key_id(i) == mk_ for i in idents.get(o, []) + [objs[o]["main_id"]]):
@@ -309,30 +342,43 @@ def annotate(fit, png=None, main=None, title=None, slug=None, maglim=11.5, workd
         aliases = [pretty_ident(i) for i in sorted(ids, key=lambda i: (rank(i) == 0, rank(i), i))
                    if rank(i) < 11 and pretty_ident(i) != name][:5]
         mag = ob["V"] if ob["V"] is not None else ob["G"] if ob["G"] is not None else ob["B"]
-        is_star = o not in dso_oids or ob["otype"].endswith("*") or ob["otype"] in STAR_TYPES
-        m = {"id": mid, "name": name, "aliases": aliases, "x": round(ob["x"] * sx, 1),
-             "y": round(ob["y"] * sy, 1),
+        is_star = o not in dso_oids or (ob["otype"] not in CLUSTER_TYPES
+                                        and (ob["otype"].endswith("*") or ob["otype"] in STAR_TYPES))
+        m = {"id": mid, "name": name, "aliases": aliases, "x": round(ob["x"], 1), "y": round(ob["y"], 1),
              "type": "Galaxy" if ob["otype"] in GALAXY_TYPES else otypes.get(ob["otype"], ob["otype"]),
              "kind": "star" if is_star else "dso", "mag": round(mag, 2) if mag is not None else None,
              "wiki": wiki,
              "simbad": SIMBAD_WEB + requests.utils.quote(mid),
              "main": o == main_oid}
         if not is_star and ob["galdim_majaxis"]:
-            maj = ob["galdim_majaxis"] * 60 / scale_arcsec * sx
-            mnr = (ob["galdim_minaxis"] or ob["galdim_majaxis"]) * 60 / scale_arcsec * sx
+            maj = ob["galdim_majaxis"] * 60 / scale_arcsec * scale_img
+            mnr = (ob["galdim_minaxis"] or ob["galdim_majaxis"]) * 60 / scale_arcsec * scale_img
             if 12 < maj < 0.6 * math.hypot(*img.size):
                 pa = ob["galdim_angle"] or 0
-                d = 1 / 60
+                d = 1 / 60  # a point 1' along the position angle gives the axis direction in the image
                 r2 = ob["ra"] + d * math.sin(math.radians(pa)) / math.cos(math.radians(ob["dec"]))
                 d2 = ob["dec"] + d * math.cos(math.radians(pa))
-                x2, y2 = wcs.world_to_pixel_values(r2, d2)
-                y2 = (H - 1 - y2) if flip else y2
-                ang = math.degrees(math.atan2(y2 - ob["y"], x2 - ob["x"]))
+                (x1, y1), (x2, y2) = register.apply(T, np.c_[to_display([ob["ra"], r2], [ob["dec"], d2])])
+                ang = math.degrees(math.atan2(y2 - y1, x2 - x1))
                 m["ellipse"] = [round(maj, 1), round(mnr, 1), round(ang, 1)]
         markers.append(m)
 
-    # drop duplicates (e.g. a double star and its primary at the same spot): keep the richer entry
+    # merge deep-sky entries that resolve to the same name (e.g. "NAME Heart Nebula" and IC 1805,
+    # whose Wikipedia article is "Heart Nebula"): keep the main/linked one, carry over link + aliases
     markers.sort(key=lambda m: (not m["main"], not m["wiki"], m["kind"] != "dso", len(m["name"])))
+    by_name, merged = {}, []
+    for m in markers:
+        k = m["kind"] == "dso" and m["name"].lower()
+        if k and k in by_name:
+            keep = by_name[k]
+            keep["wiki"] = keep["wiki"] or m["wiki"]
+            keep["aliases"] = list(dict.fromkeys(keep["aliases"] + [m["id"]] + m["aliases"]))[:6]
+            continue
+        if k:
+            by_name[k] = m
+        merged.append(m)
+    markers = merged
+    # drop duplicates (e.g. a double star and its primary at the same spot): keep the richer entry
     kept = []
     for m in markers:
         if not any(abs(m["x"] - k["x"]) < 3 and abs(m["y"] - k["y"]) < 3 for k in kept):
@@ -384,6 +430,28 @@ def render_page(data, out):
     tpl = (TEMPLATES / "photo.html").read_text()
     (out / "index.html").write_text(tpl.replace("__TITLE__", html.escape(data["title"]))
                                     .replace("/*__DATA__*/null", json.dumps(data, ensure_ascii=False)))
+
+
+def reprocess(slugs=None, log=print):
+    """Re-tag photos from their saved uploads (<data>/uploads/<slug>/), keeping title and name."""
+    uploads = Path(os.environ.get("UPLOADS_DIR", SITE.parent / "uploads"))
+    for d in sorted(SITE.glob("*/data.json")):
+        j = json.loads(d.read_text())
+        slug = j["slug"]
+        if slugs and slug not in slugs:
+            continue
+        src = uploads / slug
+        fit = src / (j.get("source", {}).get("fits") or "")
+        img = j.get("source", {}).get("image")
+        if not fit.is_file():
+            log(f"== {slug}: skipped (no saved FITS in {src})")
+            continue
+        log(f"== {slug}")
+        try:
+            annotate(fit, src / img if img else None, main=j["title"], title=j["title"], slug=slug,
+                     workdir=src / "solve", log=log)
+        except Exception as e:  # noqa: BLE001
+            log(f"   failed: {e}")
 
 
 def render_all(log=print):
@@ -438,12 +506,16 @@ def main():
     a.add_argument("--maglim", type=float, default=11.5, help="faintest star magnitude to mark (default 11.5)")
     sub.add_parser("album", help="rebuild the album index")
     sub.add_parser("render", help="re-apply the HTML templates to all photos (no catalog queries)")
+    rp = sub.add_parser("reprocess", help="re-tag photos from their saved uploads (after a fix)")
+    rp.add_argument("slugs", nargs="*", help="only these photos (default: all)")
     args = ap.parse_args()
     if args.cmd == "add":
         fit, png = find_inputs(args.path, args.png)
         annotate(fit, png, args.main, args.title, args.slug, args.maglim)
     elif args.cmd == "render":
         render_all()
+    elif args.cmd == "reprocess":
+        reprocess(args.slugs)
     else:
         build_album()
 

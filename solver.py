@@ -19,7 +19,7 @@ RANGES = {4107: (22, 30), 4108: (30, 42), 4109: (42, 60), 4110: (60, 85), 4111: 
           4116: (480, 680), 4117: (680, 1000), 4118: (1000, 1400), 4119: (1400, 2000)}
 
 
-def _pixel_scale(hdr):
+def pixel_scale(hdr):
     """Estimated arcsec/pixel from focal length and pixel size, if present."""
     f, px = hdr.get("FOCALLEN"), hdr.get("XPIXSZ")
     if f and px:
@@ -57,15 +57,17 @@ def ensure_indexes(fov_w_arcmin, fov_h_arcmin, log=print):
     return wanted
 
 
-def solve(hdr, data, workdir, log=print):
+def solve(hdr, data, workdir, log=print, scale_range=None):
     """Return a FITS header with a WCS for (hdr, data), or None if solving failed."""
     if not shutil.which("solve-field"):
         raise RuntimeError("solve-field (astrometry.net) is not installed; plate-solve the FITS first "
                            "(e.g. in Siril) or run inside the Docker image.")
-    W, H = int(hdr["NAXIS1"]), int(hdr["NAXIS2"])
-    scale = _pixel_scale(hdr)
-    if scale:
-        ensure_indexes(W * scale / 60, H * scale / 60, log)
+    a = np.asarray(data)
+    H, W = a.shape[-2:]
+    scale = pixel_scale(hdr)
+    lo_hi = scale_range or ((scale * 0.8, scale * 1.2) if scale else None)
+    if lo_hi:
+        ensure_indexes(max(W, H) * lo_hi[1] / 60, min(W, H) * lo_hi[0] / 60, log)
     else:
         ensure_indexes(60, 40, log)  # unknown optics: guess a ~1° field
 
@@ -82,9 +84,9 @@ def solve(hdr, data, workdir, log=print):
            "--no-plots", "--no-verify", "--downsample", "2", "--cpulimit", "300",
            "--new-fits", "none", "--index-xyls", "none", "--rdls", "none", "--match", "none",
            "--corr", "none", "--solved", "none", "--temp-axy", "--crpix-center", "--tweak-order", "3"]
-    if scale:
-        cmd += ["--scale-units", "arcsecperpix", "--scale-low", f"{scale * 0.8:.3f}",
-                "--scale-high", f"{scale * 1.2:.3f}"]
+    if lo_hi:
+        cmd += ["--scale-units", "arcsecperpix", "--scale-low", f"{lo_hi[0]:.3f}",
+                "--scale-high", f"{lo_hi[1]:.3f}"]
     hint = _hint(hdr)
     if hint:
         cmd += ["--ra", f"{hint[0]:.5f}", "--dec", f"{hint[1]:.5f}", "--radius", "10"]

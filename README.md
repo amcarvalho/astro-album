@@ -13,7 +13,8 @@ its name, type and magnitude, plus links to Wikipedia and SIMBAD.
    Messier/NGC/IC object in the field, then each is projected onto the image.
 3. **Wikipedia links** come from Wikidata (SIMBAD ID → English Wikipedia article).
 4. The display image is your processed PNG/JPG if you supply one, otherwise it's rendered
-   (and auto-stretched if linear) from the FITS.
+   (and auto-stretched if linear) from the FITS. A supplied image may be cropped, resized,
+   rotated or mirrored relative to the FITS: it's aligned by matching its stars to the catalog.
 
 ## Run on a server (Docker)
 
@@ -31,6 +32,8 @@ Open `http://<server>:8088` and use **+ Add photo**. Uploading needs the passwor
 | `data/astrometry-index/` | plate-solving star indexes (~200 MB, only if needed) |
 
 Update to the latest image: `docker compose pull && docker compose up -d`.
+After a fix to the tagging itself, re-tag existing photos from their saved uploads:
+`docker exec astro-album python album.py reprocess` (or name specific photos, e.g. `rosette-nebula`).
 
 The image is built for amd64 and arm64 by GitHub Actions on every push to `main`
 (`.github/workflows/docker.yml`).

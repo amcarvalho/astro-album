@@ -9,7 +9,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY album.py solver.py server.py ./
+COPY album.py register.py solver.py server.py ./
 COPY templates ./templates
 
 ENV DATA_DIR=/data PYTHONUNBUFFERED=1
