@@ -4,6 +4,7 @@ Env:
   DATA_DIR              root for persistent data (default ./data)
   SITE_DIR              generated site (default $DATA_DIR/site)
   ASTROMETRY_INDEX_DIR  plate-solving star indexes (default $DATA_DIR/astrometry-index)
+  UPLOAD_PASSWORD       password required to add photos (default upload_new_photo_now)
 """
 import os
 from pathlib import Path
@@ -12,9 +13,10 @@ DATA = Path(os.environ.get("DATA_DIR", Path(__file__).resolve().parent / "data")
 os.environ.setdefault("SITE_DIR", str(DATA / "site"))
 os.environ.setdefault("ASTROMETRY_INDEX_DIR", str(DATA / "astrometry-index"))
 
-import queue, shutil, threading, time, traceback, uuid  # noqa: E402
+import asyncio, hmac, queue, shutil, threading, time, traceback, uuid  # noqa: E402
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile  # noqa: E402
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 import album  # noqa: E402
@@ -23,6 +25,8 @@ UPLOADS = DATA / "uploads"
 UPLOADS.mkdir(parents=True, exist_ok=True)
 album.SITE.mkdir(parents=True, exist_ok=True)
 album.render_all()  # re-apply the current templates, so image updates fix existing pages
+
+UPLOAD_PASSWORD = os.environ.get("UPLOAD_PASSWORD") or "upload_new_photo_now"
 
 app = FastAPI(title="Astro Album")
 jobs: dict[str, dict] = {}
@@ -61,8 +65,29 @@ def worker():
 threading.Thread(target=worker, daemon=True).start()
 
 
+def _password_ok(request: Request) -> bool:
+    given = request.headers.get("x-upload-password", "")
+    return hmac.compare_digest(given.encode(), UPLOAD_PASSWORD.encode())
+
+
+@app.middleware("http")
+async def protect_uploads(request: Request, call_next):
+    # checked from the header before the (large) upload body is read
+    if request.url.path in ("/api/upload", "/api/auth") and request.method == "POST":
+        if not _password_ok(request):
+            await asyncio.sleep(1)  # slow down password guessing (without blocking other requests)
+            return JSONResponse({"detail": "Wrong password"}, status_code=401)
+    return await call_next(request)
+
+
 @app.get("/api/health")
 def health():
+    return {"ok": True}
+
+
+@app.post("/api/auth")
+def auth():
+    """Lets the upload dialog check the password before sending a large file."""
     return {"ok": True}
 
 

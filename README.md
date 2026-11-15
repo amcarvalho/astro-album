@@ -21,7 +21,8 @@ its name, type and magnitude, plus links to Wikipedia and SIMBAD.
 docker compose up -d        # uses ghcr.io/amcarvalho/astro-album:latest
 ```
 
-Open `http://<server>:8088` and use **+ Add photo**. Everything persistent lives in `./data`:
+Open `http://<server>:8088` and use **+ Add photo**. Uploading needs the password set by
+`UPLOAD_PASSWORD` in `docker-compose.yml` (default `upload_new_photo_now`; change it). Everything persistent lives in `./data`:
 
 | Path | What |
 |---|---|

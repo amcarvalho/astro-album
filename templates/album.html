@@ -43,9 +43,11 @@
   .field { display: grid; gap: 5px; }
   .field label { font-size: 13px; color: var(--muted); }
   .field .hint { font-size: 12px; color: var(--muted); }
-  .field input[type=text] { background: #05070d; color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+  .remember { display: flex; gap: 6px; align-items: center; cursor: pointer; }
+  .remember input { accent-color: var(--gold); }
+  .field input[type=text], .field input[type=password] { background: #05070d; color: var(--text); border: 1px solid var(--line); border-radius: 8px;
     padding: 9px 11px; font: inherit; }
-  .field input[type=text]:focus { outline: 2px solid rgba(124,196,255,.4); border-color: transparent; }
+  .field input[type=text]:focus, .field input[type=password]:focus { outline: 2px solid rgba(124,196,255,.4); border-color: transparent; }
   .drop { border: 1.5px dashed var(--line); border-radius: 10px; padding: 16px; text-align: center; color: var(--muted);
     cursor: pointer; transition: border-color .15s, background .15s; }
   .drop.over, .drop:hover { border-color: var(--accent); background: rgba(124,196,255,.05); }
@@ -87,6 +89,11 @@
       <label>Display image (recommended)</label>
       <div class="drop" id="dropImg">Drop the PNG/JPG that came with it, or click to choose<input type="file" id="image" accept=".png,.jpg,.jpeg,.tif,.tiff"></div>
       <span class="hint">Needed when the FITS is a starless layer (as with DWARF/Siril “VIS_Starless” exports). Without it, the image is rendered from the FITS.</span>
+    </div>
+    <div class="field">
+      <label for="pw">Password <span style="color:var(--err)">*</span></label>
+      <input type="password" id="pw" autocomplete="current-password">
+      <label class="remember"><input type="checkbox" id="remember"> Remember on this device</label>
     </div>
     <div class="progress" id="prog"><div></div></div>
     <div id="status"></div>
@@ -131,16 +138,28 @@ wireDrop($("dropFits"), $("fits"));
 wireDrop($("dropImg"), $("image"));
 
 let busy = false;
+const PW_KEY = "astroAlbumUploadPassword";
+try { const saved = localStorage.getItem(PW_KEY); if (saved) { $("pw").value = saved; $("remember").checked = true; } } catch {}
 $("addBtn").addEventListener("click", () => { $("dlg").showModal(); $("name").focus(); });
 $("cancel").addEventListener("click", () => $("dlg").close());
 $("dlg").addEventListener("cancel", (e) => { if (busy) e.preventDefault(); });
 
 function status(msg, err) { $("status").textContent = msg; $("status").className = err ? "err" : ""; }
 
-$("form").addEventListener("submit", (e) => {
+$("form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const f = $("fits").files[0];
   if (!f) return status("Choose a FITS file first.", true);
+  const pw = $("pw").value;
+  if (!pw) return status("Enter the upload password.", true);
+  // check the password before sending a large file
+  status("Checking password…");
+  try {
+    const r = await fetch("api/auth", { method: "POST", headers: { "X-Upload-Password": pw } });
+    if (r.status === 401) { $("pw").select(); try { localStorage.removeItem(PW_KEY); } catch {} return status("Wrong password.", true); }
+    if (!r.ok) return status(`Server error (${r.status}).`, true);
+  } catch { return status("Can't reach the server.", true); }
+  try { $("remember").checked ? localStorage.setItem(PW_KEY, pw) : localStorage.removeItem(PW_KEY); } catch {}
   const fd = new FormData();
   fd.append("name", $("name").value);
   fd.append("fits", f);
@@ -150,6 +169,7 @@ $("form").addEventListener("submit", (e) => {
   status("Uploading…");
   const xhr = new XMLHttpRequest();
   xhr.open("POST", "api/upload");
+  xhr.setRequestHeader("X-Upload-Password", pw);
   xhr.upload.onprogress = (ev) => { if (ev.lengthComputable) { const p = ev.loaded / ev.total * 100; $("prog").firstElementChild.style.width = p + "%"; status(`Uploading… ${p.toFixed(0)}%`); } };
   xhr.onerror = () => fail("Upload failed (network error).");
   xhr.onload = () => {

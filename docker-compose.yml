@@ -3,6 +3,9 @@ services:
     image: ghcr.io/amcarvalho/astro-album:latest
     container_name: astro-album
     restart: unless-stopped
+    environment:
+      # password for the "+ Add photo" upload (change it!)
+      UPLOAD_PASSWORD: upload_new_photo_now
     ports:
       - "8088:8000"
     volumes:
